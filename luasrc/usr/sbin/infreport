@@ -1,0 +1,89 @@
+#!/usr/bin/lua
+
+local nixio	= require("nixio")
+local luci	= require("luci.sys")
+
+local allow = string.sub(luci.exec("uci get wificity.@url[0].url_on"),1,-2)
+local path = string.sub(luci.exec("uci get wificity.@url[0].save_path"),1,-2)
+local host = string.sub(luci.exec("uci get wificity.@url[0].url_server"),1,-2)
+local MAC = luci.exec("cat /tmp/mac.txt")
+
+function do_upload(host,rs)
+	local sock = nixio.connect(host, 80)
+	local buffer=table.concat(rs,'\n')
+	if nil ~= sock then
+		local ctx={
+			'POST /index.php/SaveURL/index HTTP/1.1',
+			'Accept: *.*',
+			'Accept-Language: zh-CN',
+			'User-Agent: LuaWRT/5.0 (OpenWRT 12.09; mipsel32) LuaSocket/0.0.1',
+			'Host: '..host,
+			'Content-Length: '..string.len(buffer),
+			'Content-Type: text/plain',
+			'Cache-Control: max-age=0',
+			'Connection: keep-alive',
+			'X-Mac-Addr: '..MAC,
+			'\r\n',buffer
+		}
+		buffer = table.concat(ctx,'\r\n')
+		local total = string.len(buffer)
+		local offset = 0
+
+		while offset < total do
+			local ns = sock:send(buffer,offset, total - offset)
+			if ns <0 then
+				break
+			end
+			offset =offset + ns
+		end
+		print(sock:read(5000))
+		sock:close()
+	end
+end
+
+if nil~=path and nil~=allow and nil~=MAC then
+	if "off"==allow or "false"==allow then
+return
+	end
+	if string.len(MAC)~=17 then
+		return
+	end
+	if '/' ~= string.sub(path,string.len(path),-1) then
+		path=path..'/'
+	end
+	
+	local files = luci.exec("ls -1 -p "..path.."*.txt")
+	local rs={}
+	local fs={}
+	if nil~=files then
+		for x in string.gmatch(files,"[^/\n]+\n") do
+			local fname = path..string.sub(x,1,-2)
+			fs[#fs+1]=fname..".up"
+			nixio.fs.move(fname, fs[#fs])
+			fs[#fs+1]=fname
+		end
+		for i,fn in ipairs(fs) do
+			
+			print("Reading fikle",fn)
+			local fp=io.open(fn, 'r')
+			if nil ~= fp then
+				for str in fp:lines() do
+				 rs[#rs+1] = str
+				 if #rs >= 200 then
+					do_upload(host, rs)
+					rs={}
+				end
+				end
+				io.close(fp)
+				nixio.fs.unlink(fn)
+				print("Remove file...",fn)
+			else
+				print("Failed to open file:", fn)
+			end
+		end
+		--- update last.
+		if #rs >0 then
+			do_upload(host, rs)
+		end
+	end
+end
